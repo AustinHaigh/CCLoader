@@ -10,113 +10,152 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 */
+#define _BSD_SOURCE
 
-/******************************************************************************
-* INCLUDES
-*/
+#include <stdio.h>
+#include <inttypes.h>
+#include <unistd.h>
+#include <string.h>
 
-/******************************************************************************
-* DEFINES
-*/
-// Start addresses on DUP (Increased buffer size improves performance)
-#define ADDR_BUF0                   0x0000 // Buffer (512 bytes)
-#define ADDR_DMA_DESC_0             0x0200 // DMA descriptors (8 bytes)
-#define ADDR_DMA_DESC_1             (ADDR_DMA_DESC_0 + 8)
+#include "CCLoader.h"
 
-// DMA channels used on DUP
-#define CH_DBG_TO_BUF0              0x01   // Channel 0
-#define CH_BUF0_TO_FLASH            0x02   // Channel 1
+#define HIGH '1'
+#define LOW '0'
+#define INPUT "in"
+#define OUTPUT "out"
 
-// Debug commands
-#define CMD_CHIP_ERASE              0x10
-#define CMD_WR_CONFIG               0x19
-#define CMD_RD_CONFIG               0x24
-#define CMD_READ_STATUS             0x30
-#define CMD_RESUME                  0x4C
-#define CMD_DEBUG_INSTR_1B          (0x54|1)
-#define CMD_DEBUG_INSTR_2B          (0x54|2)
-#define CMD_DEBUG_INSTR_3B          (0x54|3)
-#define CMD_BURST_WRITE             0x80
-#define CMD_GET_CHIP_ID             0x68
+#define delay usleep
 
-// Debug status bitmasks
-#define STATUS_CHIP_ERASE_BUSY_BM   0x80 // New debug interface
-#define STATUS_PCON_IDLE_BM         0x40
-#define STATUS_CPU_HALTED_BM        0x20
-#define STATUS_PM_ACTIVE_BM         0x10
-#define STATUS_HALT_STATUS_BM       0x08
-#define STATUS_DEBUG_LOCKED_BM      0x04
-#define STATUS_OSC_STABLE_BM        0x02
-#define STATUS_STACK_OVERFLOW_BM    0x01
+int unexportPin(int pin){
+	char buf[16];
+	const char path[] = "/sys/class/gpio/unexport";
+	FILE *pFile = fopen(path, "w");
+	if(!pFile) {
+		char err[64];
+		sprintf(err, "Error opening file %s", path);
+		perror(err);
+		return -1;
+	}
+	
+	sprintf(buf, "%d", pin);
+	if(!fwrite(buf, strlen(buf), 1, pFile)) {
+		char err[64];
+		sprintf(err, "Error writing file %s", path);
+		perror(err);
+		return -1;
+	}
+	fwrite("\n", 1, 1, pFile);
 
-// DUP registers (XDATA space address)
-#define DUP_DBGDATA                 0x6260  // Debug interface data buffer
-#define DUP_FCTL                    0x6270  // Flash controller
-#define DUP_FADDRL                  0x6271  // Flash controller addr
-#define DUP_FADDRH                  0x6272  // Flash controller addr
-#define DUP_FWDATA                  0x6273  // Clash controller data buffer
-#define DUP_CLKCONSTA               0x709E  // Sys clock status
-#define DUP_CLKCONCMD               0x70C6  // Sys clock configuration
-#define DUP_MEMCTR                  0x70C7  // Flash bank xdata mapping
-#define DUP_DMA1CFGL                0x70D2  // Low byte, DMA config ch. 1
-#define DUP_DMA1CFGH                0x70D3  // Hi byte , DMA config ch. 1
-#define DUP_DMA0CFGL                0x70D4  // Low byte, DMA config ch. 0
-#define DUP_DMA0CFGH                0x70D5  // Low byte, DMA config ch. 0
-#define DUP_DMAARM                  0x70D6  // DMA arming register
+	fclose(pFile);
 
-// Utility macros
-//! Low nibble of 16bit variable
-#define LOBYTE(w)           ((unsigned char)(w))
-//! High nibble of 16bit variable
-#define HIBYTE(w)           ((unsigned char)(((unsigned short)(w) >> 8) & 0xFF))
-//! Convert XREG register declaration to an XDATA integer address
-//#define XREG(addr)       ((unsigned char volatile __xdata *) 0)[addr]
-//#define FCTL            XREG( 0x6270 )
-//#define XREG_TO_INT(a)      ((unsigned short)(&(a)))
+	return 0;
+}
 
-// Commands to Bootloader
-#define SBEGIN                0x01
-#define SDATA                 0x02
-#define SRSP                  0x03
-#define SEND                  0x04
-#define ERRO                 0x05
-#define WAITING               0x00
-#define RECEIVING             0x01
+int exportPin(int pin){
+	char buf[16];
+	const char path[] = "/sys/class/gpio/export";
+	FILE *pFile = fopen(path, "w");
+	if(!pFile) {
+		char err[64];
+		sprintf(err, "Error opening file %s", path);
+		perror(err);
+		return -1;
+	}
+	
+	sprintf(buf, "%d", pin);
+	if(!fwrite(buf, strlen(buf), 1, pFile)) {
+		char err[64];
+		sprintf(err, "Error writing file %s", path);
+		perror(err);
+		return -1;
+	}
+	fwrite("\n", 1, 1, pFile);
 
-// Debug control pins & the indicate LED
-int DD = 6;
-int DC = 5;
-int RESET = 4;
-int LED = 13;
+	fclose(pFile);
 
-/******************************************************************************
- VARIABLES*/
-//! DUP DMA descriptor
-const unsigned char dma_desc_0[8] =
-{
-    // Debug Interface -> Buffer
-    HIBYTE(DUP_DBGDATA),            // src[15:8]
-    LOBYTE(DUP_DBGDATA),            // src[7:0]
-    HIBYTE(ADDR_BUF0),              // dest[15:8]
-    LOBYTE(ADDR_BUF0),              // dest[7:0]
-    0,                              // len[12:8] - filled in later
-    0,                              // len[7:0]
-    31,                             // trigger: DBG_BW
-    0x11                            // increment destination
-};
-//! DUP DMA descriptor
-const unsigned char dma_desc_1[8] =
-{
-    // Buffer -> Flash controller
-    HIBYTE(ADDR_BUF0),              // src[15:8]
-    LOBYTE(ADDR_BUF0),              // src[7:0]
-    HIBYTE(DUP_FWDATA),             // dest[15:8]
-    LOBYTE(DUP_FWDATA),             // dest[7:0]
-    0,                              // len[12:8] - filled in later
-    0,                              // len[7:0]
-    18,                             // trigger: FLASH
-    0x42,                           // increment source
-};
+	return 0;
+}
+
+int digitalWrite(int pin, const char state) {
+	char path[64];
+	FILE *file;
+	
+	sprintf(path, "/sys/class/gpio/gpio%d/value", pin);
+	file = fopen(path, "w");
+	if(!file) {
+		char err[64];
+		sprintf(err, "Error opening file %s", path);
+		perror(err);
+		return -1;
+	}
+
+	if(!fwrite(&state, 1, 1, file)) {
+		char err[64];
+		sprintf(err, "Error writing file %s", path);
+		perror(err);
+		return -1;
+	}
+	fwrite("\n", 1, 1, file);
+
+	fclose(file);
+
+	//delay(1);
+
+	return 0;
+}
+
+const char digitalRead(int pin) {
+	char path[64];
+	FILE *file;
+	char output;
+	
+	sprintf(path, "/sys/class/gpio/gpio%d/value", pin);
+	file = fopen(path, "rb");
+	if(!file) {
+		char err[64];
+		sprintf(err, "Error opening file %s", path);
+		perror(err);
+		return -1;
+	}
+
+	if(!fread(&output, 1, 1, file)) {
+		char err[64];
+		sprintf(err, "Error reading file %s", path);
+		perror(err);
+		return -1;
+	}
+
+	fclose(file);
+
+	return output;
+}
+
+int pinMode(int pin, const char *mode) {
+	char path[64];
+	FILE *file;
+	
+	sprintf(path, "/sys/class/gpio/gpio%d/direction", pin);
+	file = fopen(path, "w");
+	if(!file) {
+		char err[64];
+		sprintf(err, "Error opening file %s", path);
+		perror(err);
+		return -1;
+	}
+
+
+	if(!fwrite(mode, strlen(mode), 1, file)) {
+		char err[64];
+		sprintf(err, "Error writing file %s", path);
+		perror(err);
+		return -1;
+	}
+	fwrite("\n", 1, 1, file);
+
+	fclose(file);
+
+	return 0;
+}
 
 /**************************************************************************//**
 * @brief    Writes a byte on the debug interface. Requires DD to be
@@ -124,7 +163,6 @@ const unsigned char dma_desc_1[8] =
 * @param    data    Byte to write
 * @return   None.
 ******************************************************************************/
-#pragma inline
 void write_debug_byte(unsigned char data)
 {
     unsigned char i;
@@ -150,7 +188,6 @@ void write_debug_byte(unsigned char data)
 *           input when function is called.
 * @return   Returns the byte read.
 ******************************************************************************/
-#pragma inline
 unsigned char read_debug_byte(void)
 {
     unsigned char i;
@@ -175,7 +212,6 @@ unsigned char read_debug_byte(void)
 * @return   Returns 0 if function timed out waiting for DD line to go low
 * @return   Returns 1 when DUP has indicated it is ready.
 ******************************************************************************/
-#pragma inline
 unsigned char wait_dup_ready(void)
 {
     // DUP pulls DD low when ready
@@ -233,8 +269,6 @@ unsigned char debug_command(unsigned char cmd, unsigned char *cmd_bytes,
 ******************************************************************************/
 void debug_init(void)
 {
-    volatile unsigned char i;
-
     // Send two flanks on DC while keeping RESET_N low
     // All low (incl. RESET_N)
     digitalWrite(DD, LOW);
@@ -495,8 +529,6 @@ void write_flash_memory_block(unsigned char *src, unsigned long start_addr,
 
 void RunDUP(void)
 {
-  volatile unsigned char i;
-
   // Send two flanks on DC while keeping RESET_N low
   // All low (incl. RESET_N)
   digitalWrite(DD, LOW);
@@ -508,126 +540,25 @@ void RunDUP(void)
   delay(10);   // Wait
 }
 
-void ProgrammerInit(void)
+int ProgrammerInit(void)
 {
-  pinMode(DD, OUTPUT);
-  pinMode(DC, OUTPUT);
-  pinMode(RESET, OUTPUT);
-  pinMode(LED, OUTPUT);
-  digitalWrite(DD, LOW);
-  digitalWrite(DC, LOW);
-  digitalWrite(RESET, HIGH);
-  digitalWrite(LED, LOW);
+  if(pinMode(DD, OUTPUT))
+	  return -1;
+  if(pinMode(DC, OUTPUT))
+	  return -1;
+  if(pinMode(RESET, OUTPUT))
+	  return -1;
+  if(digitalWrite(DD, LOW))
+	  return -1;
+  if(digitalWrite(DC, LOW))
+	  return -1;
+  if(digitalWrite(RESET, HIGH))
+	  return -1;
+
+  return 0;
 }
 
-void setup() 
-{  
-  ProgrammerInit();  
-  Serial.begin(115200);
-  // If using Leonado as programmer, 
-  //it should add below code,otherwise,comment it.
-  while(!Serial);
-}
-
-void loop() 
-{
-  unsigned char chip_id = 0;
-  unsigned char debug_config = 0;
-  unsigned char Continue = 0;
-  unsigned char Verify = 0;
-  
-  while(!Continue)     // Wait for starting
-  {  
-    
-    if(Serial.available()==2)
-    {      
-      if(Serial.read() == SBEGIN)
-      {
-        Verify = Serial.read();
-        Continue = 1;
-      }
-      else
-      {
-        Serial.read(); // Clear RX buffer
-      }
-    }
-  }
-
-  debug_init();
-  chip_id = read_chip_id();
-  if(chip_id == 0) 
-  {
-    Serial.write(ERRO);  
-    return; // No chip detected, run loop again.
-  }
-  
-  RunDUP();
-  debug_init();
-  
-  chip_erase();
-  RunDUP();
-  debug_init();
-  
-  // Switch DUP to external crystal osc. (XOSC) and wait for it to be stable.
-  // This is recommended if XOSC is available during programming. If
-  // XOSC is not available, comment out these two lines.
-  write_xdata_memory(DUP_CLKCONCMD, 0x80);
-  while (read_xdata_memory(DUP_CLKCONSTA) != 0x80);//0x80)
-  
-  // Enable DMA (Disable DMA_PAUSE bit in debug configuration)
-  debug_config = 0x22;
-  debug_command(CMD_WR_CONFIG, &debug_config, 1);
-  
-  // Program data (start address must be word aligned [32 bit])
-  Serial.write(SRSP);    // Request data blocks
-  digitalWrite(LED, HIGH);  
-  unsigned char Done = 0;
-  unsigned char State = WAITING;
-  unsigned char  rxBuf[514]; 
-  unsigned int BufIndex = 0;
-  unsigned int addr = 0x0000;
-  while(!Done)
-  {
-    while(Serial.available())
-    {
-      unsigned char ch;    
-      ch = Serial.read();        
-      switch (State)
-      {
-        // Bootloader is waiting for a new block, each block begin with a flag byte
-        case WAITING:
-        {
-          if(SDATA == ch)  // Incoming bytes are data
-          {
-            State = RECEIVING;
-          }
-          else if(SEND == ch)   // End receiving firmware
-          {
-            Done = 1;           // Exit while(1) in main function
-          }
-          break;
-        }      
-        // Bootloader is receiving block data  
-        case RECEIVING:
-        {          
-          rxBuf[BufIndex] = ch;
-          BufIndex++;            
-          if (BufIndex == 514) // If received one block, write it to flash
-          {
-            BufIndex = 0;              
-            uint16_t CheckSum = 0x0000;
-            for(unsigned int i=0; i<512; i++)
-            {
-              CheckSum += rxBuf[i];
-            }
-            uint16_t CheckSum_t = rxBuf[512]<<8 | rxBuf[513];
-            if(CheckSum_t != CheckSum)
-            {
-              State = WAITING;
-              Serial.write(ERRO);                    
-              chip_erase();
-              return;
-            } 
+int flash_block(FILE *pFile, unsigned char *rxBuf, unsigned char Verify, unsigned int addr) {
             write_flash_memory_block(rxBuf, addr, 512); // src, address, count                    
             if(Verify)
             {
@@ -640,27 +571,141 @@ void loop()
                 if(read_data[i] != rxBuf[i]) 
                 {
                   // Fail
-                  State = WAITING;
-                  Serial.write(ERRO);                    
+		  fprintf(stderr, "Error programming chip: verification mismatch\n");
                   chip_erase();
-                  return;
+		  return -1;
                 }
               }
             }
-            addr += (unsigned int)128;              
-            State = WAITING;
-            Serial.write(SRSP);
-          }
-          break;
-        }      
-        default:
-          break;
-      }
-    }
-  }
-  
-  digitalWrite(LED, LOW);
-  RunDUP();
+
+	    return 0;
 }
 
+void flash_chip(FILE *pFile, long fSize, unsigned char Verify) {
+  printf("Flashing firmware...");
+  fflush(stdout);
 
+  // Program data (start address must be word aligned [32 bit])
+  unsigned char  rxBuf[514]; 
+  unsigned int addr;
+  for(int i=0;i<fSize/512;i++)
+  {
+      if(fread(rxBuf, 512, 1, pFile) == 0) {
+	      perror("Error reading from file");
+	      return;
+      }
+
+  	printf("\rFlashing firmware... (%d blocks written, %d%% done)", i, 100*i*512/fSize);
+	fflush(stdout);
+
+	if(flash_block(pFile, rxBuf, Verify, addr))
+		return;
+
+            addr += (unsigned int)128;              
+  }
+
+  // add 0xFF to the end of the last block if neccessary
+  if(fSize%512) {
+      if(fread(rxBuf, fSize%512, 1, pFile) == 0) {
+	      perror("Error reading from file");
+	      return;
+      }
+
+      memset(rxBuf + fSize%512, 0xff, 512 - (fSize%512));
+
+      printf("\rFlashing firmware... (%d blocks written, 100%% done)\t", fSize/512);
+      fflush(stdout);
+
+      if(flash_block(pFile, rxBuf, Verify, addr))
+	      return;
+
+  }
+  printf("\nFlashing has completed successfully.\n");
+
+}
+
+int main(int argc, char **argv){  
+  unsigned char chip_id;
+  unsigned char debug_config;
+  unsigned char Verify = 1;
+  long fSize;
+  FILE *pFile;
+  const char *fName = argv[1];
+
+  if(argc != 2){
+	fprintf(stderr, "Usage: %s [bin file]\n", argv[0]);
+	return -1;
+  }
+
+  if(strlen(fName) < 4 || strncmp(".bin", fName+strlen(fName)-4, 4) != 0) {
+	  fprintf(stderr, "Firmware must be a .bin file.\n");
+	  return -1;
+  }
+
+  pFile = fopen(fName, "rb");
+  if(!pFile) {
+	  perror("Unable to open file");
+	  return -1;
+  }
+
+  fseek(pFile, 0, SEEK_END);
+  fSize = ftell(pFile);
+  fseek(pFile, 0, SEEK_SET);
+  if(fSize % 512 != 0)
+	  fprintf(stderr, "Warning: file size isn't the integer multiples of 512, last bytes will be set to 0xFF\n");
+
+  printf("Firmware loaded, %db\n", fSize);
+
+  if(exportPin(DD))
+	  return -1;
+  if(exportPin(DC))
+	  return -1;
+  if(exportPin(RESET))
+	  return -1;
+
+  if(ProgrammerInit())
+	  return -1;
+
+  debug_init();
+  chip_id = read_chip_id();
+  if(chip_id == 0) 
+  {
+    fprintf(stderr, "Error: no chip detected.\n");
+    return -1;
+  }
+  else
+	  printf("Chip ID = 0x%X\n",chip_id);
+
+  
+  RunDUP();
+  debug_init();
+  printf("Erasing chip...\n");
+  
+  chip_erase();
+  printf("Chip erased.\n");
+  RunDUP();
+  debug_init();
+  
+  // Switch DUP to external crystal osc. (XOSC) and wait for it to be stable.
+  // This is recommended if XOSC is available during programming. If
+  // XOSC is not available, comment out these two lines.
+  write_xdata_memory(DUP_CLKCONCMD, 0x80);
+  while (read_xdata_memory(DUP_CLKCONSTA) != 0x80);
+  printf("XOSC has stabilized.\n");
+
+  
+  // Enable DMA (Disable DMA_PAUSE bit in debug configuration)
+  debug_config = 0x22;
+  debug_command(CMD_WR_CONFIG, &debug_config, 1);
+
+  flash_chip(pFile, fSize, Verify);
+
+  unexportPin(DC);
+  unexportPin(DD);
+  unexportPin(RESET);
+
+  
+  RunDUP();
+
+  return 0;
+}
