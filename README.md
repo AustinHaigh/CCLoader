@@ -1,9 +1,13 @@
-CCLoader
+CCLoader-RPi
 ========
 
-Burn CC254x firmware using an Arduino board.
+Burn CC254x firmware using a Raspberry Pi.
 
-1. Load the CCLoader Arduino sketch to the UNO board.
-2. Wire the pins:
-  ![image](CCLoader.jpg)
-3. Use CCLoader.exe to load the Demo.bin to the UNO board and the board will burn the firmware to the BLE Mini.
+Build
+========
+
+1. Install gcc
+2. Clone the repository
+3. (optional) Edit DD, DC, and RESET defines in CCLoader.h
+4. `gcc src/CCLoader.c -std=c99 -o CCLoader`
+
