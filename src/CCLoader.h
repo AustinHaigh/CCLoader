@@ -67,11 +67,6 @@
 #define WAITING               0x00
 #define RECEIVING             0x01
 
-// Debug control pins 
-#define DD 3 
-#define DC 2
-#define RESET 4
-
 /******************************************************************************
  VARIABLES*/
 //! DUP DMA descriptor
@@ -99,4 +94,14 @@ const unsigned char dma_desc_1[8] =
     0,                              // len[7:0]
     18,                             // trigger: FLASH
     0x42,                           // increment source
+};
+
+// program arguments
+struct args {
+	int DD;
+	int DC;
+	int RESET;
+	int verify;
+	int retries;
+	char *fName;
 };

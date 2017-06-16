@@ -12,10 +12,12 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 */
 #define _BSD_SOURCE
 
+#include <stdlib.h>
 #include <stdio.h>
 #include <inttypes.h>
 #include <unistd.h>
 #include <string.h>
+#include <argp.h>
 
 #include "CCLoader.h"
 
@@ -24,7 +26,18 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 #define INPUT "in"
 #define OUTPUT "out"
 
-#define delay usleep
+struct args args = { 
+	.DC = 2,
+	.DD = 3,
+	.RESET = 4,
+	.retries = 5,
+	.verify = 1,
+	.fName = NULL
+};
+
+void delay(int ms) {
+	return;
+}
 
 int unexportPin(int pin){
 	char buf[16];
@@ -169,17 +182,17 @@ void write_debug_byte(unsigned char data)
     for (i = 0; i < 8; i++)
     {
         // Set clock high and put data on DD line
-        digitalWrite(DC, HIGH);
+        digitalWrite(args.DC, HIGH);
         if(data & 0x80)
         {
-          digitalWrite(DD, HIGH);
+          digitalWrite(args.DD, HIGH);
         }
         else
         {
-          digitalWrite(DD, LOW);
+          digitalWrite(args.DD, LOW);
         }
         data <<= 1;
-        digitalWrite(DC, LOW); // set clock low (DUP capture flank)
+        digitalWrite(args.DC, LOW); // set clock low (DUP capture flank)
     }
 }
 
@@ -194,13 +207,13 @@ unsigned char read_debug_byte(void)
     unsigned char data = 0x00;
     for (i = 0; i < 8; i++)
     {
-        digitalWrite(DC, HIGH);  // DC high
+        digitalWrite(args.DC, HIGH);  // DC high
         data <<= 1;
-        if(HIGH == digitalRead(DD))
+        if(HIGH == digitalRead(args.DD))
         {
           data |= 0x01;
         }        
-        digitalWrite(DC, LOW);     // DC low
+        digitalWrite(args.DC, LOW);     // DC low
     }
     return data;
 }
@@ -216,7 +229,7 @@ unsigned char wait_dup_ready(void)
 {
     // DUP pulls DD low when ready
     unsigned int count = 0;
-    while ((HIGH == digitalRead(DD)) && count < 16)
+    while ((HIGH == digitalRead(args.DD)) && count < 16)
     {
         // Clock out 8 bits before checking if DD is low again
         read_debug_byte();
@@ -240,7 +253,7 @@ unsigned char debug_command(unsigned char cmd, unsigned char *cmd_bytes,
     unsigned short i;
     unsigned char output = 0;
     // Make sure DD is output
-    pinMode(DD, OUTPUT);
+    pinMode(args.DD, OUTPUT);
     // Send command
     write_debug_byte(cmd);
     // Send bytes
@@ -249,14 +262,14 @@ unsigned char debug_command(unsigned char cmd, unsigned char *cmd_bytes,
         write_debug_byte(cmd_bytes[i]);
     }
     // Set DD as input
-    pinMode(DD, INPUT);
-    digitalWrite(DD, HIGH);
+    pinMode(args.DD, INPUT);
+    digitalWrite(args.DD, HIGH);
     // Wait for data to be ready
     wait_dup_ready();
     // Read returned byte
     output = read_debug_byte();
     // Set DD as output
-    pinMode(DD, OUTPUT);
+    pinMode(args.DD, OUTPUT);
 
     return output;
 }
@@ -271,19 +284,19 @@ void debug_init(void)
 {
     // Send two flanks on DC while keeping RESET_N low
     // All low (incl. RESET_N)
-    digitalWrite(DD, LOW);
-    digitalWrite(DC, LOW);
-    digitalWrite(RESET, LOW);
+    digitalWrite(args.DD, LOW);
+    digitalWrite(args.DC, LOW);
+    digitalWrite(args.RESET, LOW);
     delay(10);   // Wait
-    digitalWrite(DC, HIGH);                    // DC high
+    digitalWrite(args.DC, HIGH);                    // DC high
     delay(10);   // Wait
-    digitalWrite(DC, LOW);                     // DC low
+    digitalWrite(args.DC, LOW);                     // DC low
     delay(10);   // Wait
-    digitalWrite(DC, HIGH);                    // DC high
+    digitalWrite(args.DC, HIGH);                    // DC high
     delay(10);   // Wait
-    digitalWrite(DC, LOW);                     // DC low
+    digitalWrite(args.DC, LOW);                     // DC low
     delay(10);   // Wait
-    digitalWrite(RESET, HIGH);              // Release RESET_N
+    digitalWrite(args.RESET, HIGH);              // Release RESET_N
     delay(10);   // Wait
 }
 
@@ -297,13 +310,13 @@ unsigned char read_chip_id(void)
     unsigned char id = 0;
 
     // Make sure DD is output
-    pinMode(DD, OUTPUT);
+    pinMode(args.DD, OUTPUT);
     delay(1);
     // Send command
     write_debug_byte(CMD_GET_CHIP_ID);
     // Set DD as input
-    pinMode(DD, INPUT);
-    digitalWrite(DD, HIGH);
+    pinMode(args.DD, INPUT);
+    digitalWrite(args.DD, HIGH);
     delay(1);
     // Wait for data to be ready
     if(wait_dup_ready() == 1)
@@ -313,7 +326,7 @@ unsigned char read_chip_id(void)
       read_debug_byte();      // Revision (discard)
     }
     // Set DD as output
-    pinMode(DD, OUTPUT);
+    pinMode(args.DD, OUTPUT);
 
     return id;
 }
@@ -330,7 +343,7 @@ void burst_write_block(unsigned char *src, unsigned short num_bytes)
     unsigned short i;
 
     // Make sure DD is output
-    pinMode(DD, OUTPUT);
+    pinMode(args.DD, OUTPUT);
 
     write_debug_byte(CMD_BURST_WRITE | HIBYTE(num_bytes));
     write_debug_byte(LOBYTE(num_bytes));
@@ -340,13 +353,13 @@ void burst_write_block(unsigned char *src, unsigned short num_bytes)
     }
 
     // Set DD as input
-    pinMode(DD, INPUT);
-    digitalWrite(DD, HIGH);
+    pinMode(args.DD, INPUT);
+    digitalWrite(args.DD, HIGH);
     // Wait for DUP to be ready
     wait_dup_ready();
     read_debug_byte(); // ignore output
     // Set DD as output
-    pinMode(DD, OUTPUT);
+    pinMode(args.DD, OUTPUT);
 }
 
 /**************************************************************************//**
@@ -531,34 +544,34 @@ void RunDUP(void)
 {
   // Send two flanks on DC while keeping RESET_N low
   // All low (incl. RESET_N)
-  digitalWrite(DD, LOW);
-  digitalWrite(DC, LOW);
-  digitalWrite(RESET, LOW);
+  digitalWrite(args.DD, LOW);
+  digitalWrite(args.DC, LOW);
+  digitalWrite(args.RESET, LOW);
   delay(10);   // Wait
 
-  digitalWrite(RESET, HIGH);
+  digitalWrite(args.RESET, HIGH);
   delay(10);   // Wait
 }
 
 int ProgrammerInit(void)
 {
-  if(pinMode(DD, OUTPUT))
+  if(pinMode(args.DD, OUTPUT))
 	  return -1;
-  if(pinMode(DC, OUTPUT))
+  if(pinMode(args.DC, OUTPUT))
 	  return -1;
-  if(pinMode(RESET, OUTPUT))
+  if(pinMode(args.RESET, OUTPUT))
 	  return -1;
-  if(digitalWrite(DD, LOW))
+  if(digitalWrite(args.DD, LOW))
 	  return -1;
-  if(digitalWrite(DC, LOW))
+  if(digitalWrite(args.DC, LOW))
 	  return -1;
-  if(digitalWrite(RESET, HIGH))
+  if(digitalWrite(args.RESET, HIGH))
 	  return -1;
 
   return 0;
 }
 
-int flash_block(FILE *pFile, unsigned char *rxBuf, unsigned char Verify, unsigned int addr) {
+int flash_block(FILE *pFile, unsigned char *rxBuf, unsigned char Verify, unsigned int addr, int retries) {
             write_flash_memory_block(rxBuf, addr, 512); // src, address, count                    
             if(Verify)
             {
@@ -570,10 +583,11 @@ int flash_block(FILE *pFile, unsigned char *rxBuf, unsigned char Verify, unsigne
               {
                 if(read_data[i] != rxBuf[i]) 
                 {
-                  // Fail
-		  fprintf(stderr, "Error programming chip: verification mismatch\n");
-                  chip_erase();
-		  return -1;
+			fprintf(stderr, "\nError verifying byte %d of block %d, trying again.\n", i, addr/128);
+			if(retries)
+				return flash_block(pFile, rxBuf, Verify, addr, retries-1);
+			else
+				return -1;
                 }
               }
             }
@@ -587,7 +601,7 @@ void flash_chip(FILE *pFile, long fSize, unsigned char Verify) {
 
   // Program data (start address must be word aligned [32 bit])
   unsigned char  rxBuf[514]; 
-  unsigned int addr;
+  unsigned int addr = 0;
   for(int i=0;i<fSize/512;i++)
   {
       if(fread(rxBuf, 512, 1, pFile) == 0) {
@@ -598,8 +612,9 @@ void flash_chip(FILE *pFile, long fSize, unsigned char Verify) {
   	printf("\rFlashing firmware... (%d blocks written, %d%% done)", i, 100*i*512/fSize);
 	fflush(stdout);
 
-	if(flash_block(pFile, rxBuf, Verify, addr))
+	if(flash_block(pFile, rxBuf, Verify, addr, 10))
 		return;
+
 
             addr += (unsigned int)128;              
   }
@@ -616,33 +631,156 @@ void flash_chip(FILE *pFile, long fSize, unsigned char Verify) {
       printf("\rFlashing firmware... (%d blocks written, 100%% done)\t", fSize/512);
       fflush(stdout);
 
-      if(flash_block(pFile, rxBuf, Verify, addr))
-	      return;
+	int retries = 3;
+	while(--retries && flash_block(pFile, rxBuf, Verify, addr, 10))
+		fprintf(stderr, "\nError verifying block %d, trying again.\n", fSize/512+1);
+	if(!retries)
+		return;
 
   }
   printf("\nFlashing has completed successfully.\n");
 
 }
 
+error_t arg_parser(int key, char *arg, struct argp_state *state) {
+	char *endptr;
+	int val;
+	error_t err = 0;
+
+	switch(key){
+		case 'v':
+			args.verify = 0;
+			printf("Verify disabled\n");
+			break;
+		case 'r':
+			val = strtol(arg, &endptr, 10);
+			if(arg == endptr)
+				errno = EINVAL;
+			if(errno == EINVAL || errno == ERANGE)
+			{
+				err = errno;
+				break;
+			}
+
+			if(val < 0 || val > 15)
+			{
+				printf("Number of retries must be between 0-15.\n");
+				err = EINVAL;
+				break;
+			}
+
+			args.retries = val;
+			printf("Retries: %d\n", args.retries);
+			return 0;
+		case 'C':
+			val = strtol(arg, &endptr, 10);
+			if(arg == endptr)
+				errno = EINVAL;
+			if(errno == EINVAL || errno == ERANGE)
+			{
+				err = errno;
+				break;
+			}
+
+			args.DC = val;
+			printf("DC: pin %d\n", args.DC);
+			return 0;
+		case 'D':
+			val = strtol(arg, &endptr, 10);
+			if(arg == endptr)
+				errno = EINVAL;
+			if(errno == EINVAL || errno == ERANGE)
+			{
+				err = errno;
+				break;
+			}
+
+			args.DD = val;
+			printf("DD: pin %d\n", args.DD);
+			return 0;
+		case 'R':
+			val = strtol(arg, &endptr, 10);
+			if(arg == endptr)
+				errno = EINVAL;
+			if(errno == EINVAL || errno == ERANGE)
+			{
+				err = errno;
+				break;
+			}
+
+			args.RESET = val;
+			printf("RESET: pin %d\n", args.RESET);
+			return 0;
+		case ARGP_KEY_ARG:
+			if(args.fName)
+			{
+				err = EINVAL;
+				break;
+			}
+			args.fName = arg;
+			break;
+		case ARGP_KEY_END:
+			if(args.fName == NULL)
+				argp_usage(state);
+			break;
+		default:
+			return ARGP_ERR_UNKNOWN;
+	}
+
+	if(err)
+		argp_usage(state);
+	else
+		return 0;
+}
+
 int main(int argc, char **argv){  
   unsigned char chip_id;
-  unsigned char debug_config;
+  unsigned char debug_config = 0x22;
   unsigned char Verify = 1;
   long fSize;
   FILE *pFile;
-  const char *fName = argv[1];
+  struct argp_option options[] = {
+	  {
+		  .name = "no-verify",
+		  .key = 'v',
+		  .doc = "Do not verify each block after it is flashed"
+	  },
+	  {
+		  .name = "retries",
+		  .key = 'r',
+		  .arg = "RETRIES",
+		  .doc = "Number of time to retry flashing a block after it fails verification (defaults to 5)"
+	  },
+	  {
+		  .name = "DC",
+		  .key = 'C',
+		  .arg = "pin",
+		  .doc = "Raspberry Pi pin connected to the DEBUG_CLOCK (DC) pin on the CC254x chip"
+	  },
+	  {
+		  .name = "DD",
+		  .key = 'D',
+		  .arg = "pin",
+		  .doc = "Raspberry Pi pin connected to the DEBUG_DATA (DD) pin on the CC254x chip"
+	  },
+	  {	
+		  .name = "RESET",
+		  .key = 'R',
+		  .arg = "pin",
+		  .doc = "Raspberry Pi pin connected to the RESET_N pin on the CC254x chip"
+	  },
+	  { 0 }
+  };
+  struct argp argp = {
+	  .options = options,
+	  .parser = arg_parser,
+	  .args_doc = "[firmware.bin]",
+	  .doc = "Flash firmware on a CC254x chip, like those used in HM-10 modules.",
+  };
 
-  if(argc != 2){
-	fprintf(stderr, "Usage: %s [bin file]\n", argv[0]);
-	return -1;
-  }
+  argp_parse(&argp, argc, argv, 0, NULL, &args);
 
-  if(strlen(fName) < 4 || strncmp(".bin", fName+strlen(fName)-4, 4) != 0) {
-	  fprintf(stderr, "Firmware must be a .bin file.\n");
-	  return -1;
-  }
-
-  pFile = fopen(fName, "rb");
+  pFile = fopen(args.fName, "rb");
   if(!pFile) {
 	  perror("Unable to open file");
 	  return -1;
@@ -652,15 +790,15 @@ int main(int argc, char **argv){
   fSize = ftell(pFile);
   fseek(pFile, 0, SEEK_SET);
   if(fSize % 512 != 0)
-	  fprintf(stderr, "Warning: file size isn't the integer multiples of 512, last bytes will be set to 0xFF\n");
+	  fprintf(stderr, "Warning: file size isn't a multiple of 512, last bytes will be set to 0xFF\n");
 
-  printf("Firmware loaded, %db\n", fSize);
+  printf("Firmware loaded, %d kB\n", fSize/1024);
 
-  if(exportPin(DD))
+  if(exportPin(args.DD))
 	  return -1;
-  if(exportPin(DC))
+  if(exportPin(args.DC))
 	  return -1;
-  if(exportPin(RESET))
+  if(exportPin(args.RESET))
 	  return -1;
 
   if(ProgrammerInit())
@@ -695,17 +833,15 @@ int main(int argc, char **argv){
 
   
   // Enable DMA (Disable DMA_PAUSE bit in debug configuration)
-  debug_config = 0x22;
   debug_command(CMD_WR_CONFIG, &debug_config, 1);
 
-  flash_chip(pFile, fSize, Verify);
-
-  unexportPin(DC);
-  unexportPin(DD);
-  unexportPin(RESET);
-
+  flash_chip(pFile, fSize, args.verify);
   
   RunDUP();
+
+  unexportPin(args.DC);
+  unexportPin(args.DD);
+  unexportPin(args.RESET);
 
   return 0;
 }
