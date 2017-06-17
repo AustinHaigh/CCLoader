@@ -12,6 +12,8 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 */
 #define _BSD_SOURCE
 
+#include <sys/stat.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <inttypes.h>
@@ -26,6 +28,8 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 #define INPUT "in"
 #define OUTPUT "out"
 
+int cachedFiles[32] = { 0 };
+
 struct args args = {
 	.DC = 2,
 	.DD = 3,
@@ -37,6 +41,7 @@ struct args args = {
 
 void delay(int ms)
 {
+	usleep(ms);
 	return;
 }
 
@@ -94,56 +99,54 @@ int exportPin(int pin)
 
 int digitalWrite(int pin, const char state)
 {
-	char path[64];
-	FILE *file;
+	if(cachedFiles[pin] == 0) {
+		char path[64];
+		sprintf(path, "/sys/class/gpio/gpio%d/value", pin);
+		cachedFiles[pin] = open(path, O_RDWR);
 
-	sprintf(path, "/sys/class/gpio/gpio%d/value", pin);
-	file = fopen(path, "w");
-	if (!file) {
+		if (cachedFiles[pin] == -1) {
+			char err[64];
+			sprintf(err, "Error opening file %s", path);
+			perror(err);
+			return -1;
+		}
+	}
+
+	if (!write(cachedFiles[pin], &state, 1)) {
 		char err[64];
-		sprintf(err, "Error opening file %s", path);
+		sprintf(err, "Error writing to pin %d", pin);
 		perror(err);
 		return -1;
 	}
-
-	if (!fwrite(&state, 1, 1, file)) {
-		char err[64];
-		sprintf(err, "Error writing file %s", path);
-		perror(err);
-		return -1;
-	}
-	fwrite("\n", 1, 1, file);
-
-	fclose(file);
-
-	//delay(1);
 
 	return 0;
 }
 
 const char digitalRead(int pin)
 {
-	char path[64];
-	FILE *file;
+	if(cachedFiles[pin] == 0) {
+		char path[64];
+		sprintf(path, "/sys/class/gpio/gpio%d/value", pin);
+		cachedFiles[pin] = open(path, O_RDWR);
+
+		if (cachedFiles[pin] == -1) {
+			char err[64];
+			sprintf(err, "Error opening file %s", path);
+			perror(err);
+			return -1;
+		}
+	}
+	else
+		lseek(cachedFiles[pin], 0, SEEK_SET);
+
 	char output;
 
-	sprintf(path, "/sys/class/gpio/gpio%d/value", pin);
-	file = fopen(path, "rb");
-	if (!file) {
+	if (read(cachedFiles[pin], &output, 1) != 1) {
 		char err[64];
-		sprintf(err, "Error opening file %s", path);
+		sprintf(err, "Error reading pin %d", pin);
 		perror(err);
 		return -1;
 	}
-
-	if (!fread(&output, 1, 1, file)) {
-		char err[64];
-		sprintf(err, "Error reading file %s", path);
-		perror(err);
-		return -1;
-	}
-
-	fclose(file);
 
 	return output;
 }
