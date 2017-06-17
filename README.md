@@ -5,7 +5,7 @@ Burn CC254x firmware using a Raspberry Pi.
 
 Build
 -----
-`gcc src/CCLoader.c -std=c99 -o CCLoader`
+`gcc src/CCLoader.c -std=c99 -lm -o CCLoader`
 
 Usage
 -----
